@@ -457,8 +457,30 @@
             const handleSaveStock = (e) => {
                 e.preventDefault();
                 
+                // 自動記憶新股票邏輯
+                const code = newStock.code.trim();
+                const name = newStock.name.trim();
+                
+                if (code && name) {
+                    // 如果代碼不存在，或者名稱被修改過，就更新 Master Data
+                    if (!stockMasterData[code] || stockMasterData[code].name !== name) {
+                        setStockMasterData(prev => ({
+                            ...prev,
+                            [code]: {
+                                name: name,
+                                // 如果是既有股票，保留原有分類；若是新股，則預設為自選股
+                                category: stockMasterData[code]?.category || '自選股',
+                                market: stockMasterData[code]?.market || '自定義'
+                            }
+                        }));
+                    }
+                }
+
                 const stockData = {
                     ...newStock,
+                    // 如果 newStock.category 為空 (手動輸入新股時)，則使用預設值
+                    category: newStock.category || (stockMasterData[code]?.category || '自選股'),
+                    market: newStock.market || (stockMasterData[code]?.market || '自定義'),
                     shares: Number(newStock.shares),
                     buyPrice: Number(newStock.buyPrice),
                     currentPrice: Number(newStock.currentPrice) || Number(newStock.buyPrice),
