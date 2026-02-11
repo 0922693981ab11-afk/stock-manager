@@ -63,7 +63,9 @@
                 ExternalLink: <g><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/></g>,
                 ArrowRight: <g><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></g>,
                 PenTool: <g><path d="m12 19 7-7 3 3-7 7-3-3z"/><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="m2 2 7.586 7.586"/><circle cx="11" cy="11" r="2"/></g>,
-                Globe: <g><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></g>
+                Globe: <g><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></g>,
+                MinusCircle: <g><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></g>,
+                History: <g><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></g>
             };
 
             const content = icons[name] || <circle cx="12" cy="12" r="10" />;
@@ -142,7 +144,7 @@
                 '3293': { name: '鈊象', category: '文化創意業', market: '上櫃' }
             };
 
-            // 初始真實數據 (來源: Google Search, 2026/01/27)
+            // 初始真實數據
             const initialStocks = [
                 {
                     id: 1,
@@ -159,59 +161,12 @@
                     pe: 28.68,
                     beta: 1.46,
                     stdDev: 0.25, 
-                },
-                {
-                    id: 2,
-                    code: '2317',
-                    name: '鴻海',
-                    category: '其他電子業',
-                    market: '上市',
-                    buyDate: '2023-05-20',
-                    shares: 1000,
-                    buyPrice: 105,
-                    currentPrice: 225.5,
-                    lastUpdate: '2026/01/27 13:25',
-                    eps: 13.44,
-                    pe: 16.77,
-                    beta: 1.0,
-                    stdDev: 0.20,
-                },
-                {
-                    id: 3,
-                    code: '2454',
-                    name: '聯發科',
-                    category: '半導體業',
-                    market: '上市',
-                    buyDate: '2023-06-10',
-                    shares: 1000,
-                    buyPrice: 750,
-                    currentPrice: 1775,
-                    lastUpdate: '2026/01/27 13:25',
-                    eps: 66.62,
-                    pe: 26.64,
-                    beta: 1.01,
-                    stdDev: 0.22,
-                },
-                {
-                    id: 4,
-                    code: '0050',
-                    name: '元大台灣50',
-                    category: 'ETF',
-                    market: '上市',
-                    buyDate: '2024-01-01',
-                    shares: 1000,
-                    buyPrice: 130,
-                    currentPrice: 73.05,
-                    lastUpdate: '2026/01/27 13:25',
-                    eps: 0,
-                    pe: 0,
-                    beta: 1.0,
-                    stdDev: 0.15,
                 }
             ];
 
             const [stocks, setStocks] = useState(initialStocks);
             const [stockMasterData, setStockMasterData] = useState(defaultStockMasterData);
+            const [soldHistory, setSoldHistory] = useState([]); // 新增：已實現損益紀錄
             const [dataDate, setDataDate] = useState(null); 
             
             const [currentTime, setCurrentTime] = useState(new Date());
@@ -221,11 +176,20 @@
             const [isFormOpen, setIsFormOpen] = useState(false);
             const [isDataImportOpen, setIsDataImportOpen] = useState(false);
             const [isPriceUpdateOpen, setIsPriceUpdateOpen] = useState(false);
-            const [isResourcesOpen, setIsResourcesOpen] = useState(false); // 新增：控制資源視窗
+            const [isResourcesOpen, setIsResourcesOpen] = useState(false);
+            const [isSellModalOpen, setIsSellModalOpen] = useState(false); // 新增：賣出視窗
+            const [isHistoryOpen, setIsHistoryOpen] = useState(false); // 新增：歷史紀錄視窗
+            
             const [priceUpdateData, setPriceUpdateData] = useState({}); 
             const [importStatus, setImportStatus] = useState(null);
             const [editingId, setEditingId] = useState(null);
             
+            // 賣出相關狀態
+            const [sellStockData, setSellStockData] = useState(null);
+            const [sellShares, setSellShares] = useState(0);
+            const [sellPrice, setSellPrice] = useState(0);
+            const [sellDate, setSellDate] = useState(new Date().toISOString().split('T')[0]);
+
             const [newStock, setNewStock] = useState({
                 code: '',
                 name: '',
@@ -263,7 +227,7 @@
                 if (isAutoUpdate) {
                     interval = setInterval(() => {
                         fetchRealTimeData();
-                    }, 10000); // 每 10 秒
+                    }, 10000); 
                 }
                 return () => clearInterval(interval);
             }, [isAutoUpdate]);
@@ -272,6 +236,7 @@
                 const savedStocks = localStorage.getItem('myStockPortfolio');
                 const savedMasterData = localStorage.getItem('myStockMasterData');
                 const savedDataDate = localStorage.getItem('myStockDataDate'); 
+                const savedHistory = localStorage.getItem('myStockSoldHistory'); // 讀取歷史
                 
                 if (savedStocks) {
                     setStocks(JSON.parse(savedStocks));
@@ -282,6 +247,9 @@
                 }
                 if (savedDataDate) {
                     setDataDate(savedDataDate);
+                }
+                if (savedHistory) {
+                    setSoldHistory(JSON.parse(savedHistory));
                 }
             }, []);
 
@@ -299,10 +267,17 @@
                 }
             }, [dataDate]);
 
+            useEffect(() => {
+                localStorage.setItem('myStockSoldHistory', JSON.stringify(soldHistory));
+            }, [soldHistory]);
+
             const totalCost = stocks.reduce((acc, stock) => acc + (stock.buyPrice * stock.shares), 0);
             const totalValue = stocks.reduce((acc, stock) => acc + (stock.currentPrice * stock.shares), 0);
             const totalPL = totalValue - totalCost;
             const totalROI = totalCost > 0 ? (totalPL / totalCost) * 100 : 0;
+            
+            // 計算已實現總損益
+            const realizedPL = soldHistory.reduce((acc, record) => acc + record.pl, 0);
 
             const getStockLink = (code, market) => {
                 const suffix = (market === '上櫃' || market === '興櫃') ? '.TWO' : '.TW';
@@ -454,21 +429,79 @@
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             };
 
+            // 開啟賣出視窗
+            const handleOpenSellModal = (stock) => {
+                setSellStockData(stock);
+                setSellShares(stock.shares); // 預設賣出全部
+                setSellPrice(stock.currentPrice); // 預設為現價
+                setSellDate(new Date().toISOString().split('T')[0]);
+                setIsSellModalOpen(true);
+            };
+
+            // 執行賣出
+            const handleExecuteSell = (e) => {
+                e.preventDefault();
+                if (!sellStockData) return;
+
+                const sharesToSell = Number(sellShares);
+                const price = Number(sellPrice);
+                
+                if (sharesToSell <= 0 || sharesToSell > sellStockData.shares) {
+                    alert('賣出股數不正確');
+                    return;
+                }
+
+                // 計算損益
+                // 簡單計算：使用平均成本。若要更精確需用 FIFO，此處簡化
+                const costPerShare = sellStockData.buyPrice;
+                const profitLoss = (price - costPerShare) * sharesToSell;
+                
+                // 建立歷史紀錄
+                const historyRecord = {
+                    id: Date.now(),
+                    code: sellStockData.code,
+                    name: sellStockData.name,
+                    sellDate: sellDate,
+                    sellPrice: price,
+                    shares: sharesToSell,
+                    buyPrice: costPerShare,
+                    pl: profitLoss,
+                    roi: (profitLoss / (costPerShare * sharesToSell)) * 100
+                };
+
+                // 更新歷史
+                setSoldHistory([historyRecord, ...soldHistory]);
+
+                // 更新庫存
+                if (sharesToSell === sellStockData.shares) {
+                    // 全部賣出 -> 移除
+                    setStocks(stocks.filter(s => s.id !== sellStockData.id));
+                } else {
+                    // 部分賣出 -> 減少股數
+                    setStocks(stocks.map(s => {
+                        if (s.id === sellStockData.id) {
+                            return { ...s, shares: s.shares - sharesToSell };
+                        }
+                        return s;
+                    }));
+                }
+
+                setIsSellModalOpen(false);
+                setSellStockData(null);
+            };
+
             const handleSaveStock = (e) => {
                 e.preventDefault();
                 
-                // 自動記憶新股票邏輯
                 const code = newStock.code.trim();
                 const name = newStock.name.trim();
                 
                 if (code && name) {
-                    // 如果代碼不存在，或者名稱被修改過，就更新 Master Data
                     if (!stockMasterData[code] || stockMasterData[code].name !== name) {
                         setStockMasterData(prev => ({
                             ...prev,
                             [code]: {
                                 name: name,
-                                // 如果是既有股票，保留原有分類；若是新股，則預設為自選股
                                 category: stockMasterData[code]?.category || '自選股',
                                 market: stockMasterData[code]?.market || '自定義'
                             }
@@ -478,7 +511,6 @@
 
                 const stockData = {
                     ...newStock,
-                    // 如果 newStock.category 為空 (手動輸入新股時)，則使用預設值
                     category: newStock.category || (stockMasterData[code]?.category || '自選股'),
                     market: newStock.market || (stockMasterData[code]?.market || '自定義'),
                     shares: Number(newStock.shares),
@@ -514,7 +546,7 @@
             };
 
             const deleteStock = (id) => {
-                if (window.confirm('確定要刪除這筆交易紀錄嗎？')) {
+                if (window.confirm('確定要刪除這筆交易紀錄嗎？（注意：這不是賣出，刪除後將不計算損益）')) {
                     setStocks(stocks.filter(stock => stock.id !== id));
                 }
             };
@@ -680,7 +712,122 @@
                         </div>
                     )}
 
-                    {/* 資料匯入視窗 */}
+                    {/* 賣出股票視窗 */}
+                    {isSellModalOpen && sellStockData && (
+                        <div className="fixed inset-0 bg-black/50 z-30 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden animate-fade-in-up">
+                                <div className="bg-orange-600 text-white p-4 border-b flex justify-between items-center">
+                                    <h3 className="font-bold flex items-center gap-2">
+                                        <Icon name="MinusCircle" className="h-5 w-5" />
+                                        賣出股票: {sellStockData.name} ({sellStockData.code})
+                                    </h3>
+                                    <button onClick={() => setIsSellModalOpen(false)} className="text-orange-100 hover:text-white"><Icon name="X" className="h-5 w-5"/></button>
+                                </div>
+                                <form onSubmit={handleExecuteSell} className="p-6 space-y-4">
+                                    <div className="bg-orange-50 p-3 rounded-lg text-sm text-orange-800 mb-4">
+                                        <p>目前庫存: <span className="font-bold">{sellStockData.shares}</span> 股</p>
+                                        <p>購入均價: <span className="font-bold">${sellStockData.buyPrice}</span></p>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-bold text-gray-600">賣出股數</label>
+                                        <input 
+                                            type="number" 
+                                            required
+                                            max={sellStockData.shares}
+                                            min="1"
+                                            value={sellShares} 
+                                            onChange={(e) => setSellShares(e.target.value)} 
+                                            className="w-full p-2 border rounded focus:ring-2 focus:ring-orange-500 outline-none" 
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-bold text-gray-600">賣出價格</label>
+                                        <input 
+                                            type="number" 
+                                            step="0.01"
+                                            required
+                                            value={sellPrice} 
+                                            onChange={(e) => setSellPrice(e.target.value)} 
+                                            className="w-full p-2 border rounded focus:ring-2 focus:ring-orange-500 outline-none" 
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-bold text-gray-600">賣出日期</label>
+                                        <input 
+                                            type="date" 
+                                            required
+                                            value={sellDate} 
+                                            onChange={(e) => setSellDate(e.target.value)} 
+                                            className="w-full p-2 border rounded focus:ring-2 focus:ring-orange-500 outline-none" 
+                                        />
+                                    </div>
+                                    <div className="pt-4 flex justify-end gap-3">
+                                        <button type="button" onClick={() => setIsSellModalOpen(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button>
+                                        <button type="submit" className="px-6 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded shadow font-bold">確認賣出</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 歷史紀錄視窗 */}
+                    {isHistoryOpen && (
+                        <div className="fixed inset-0 bg-black/50 z-30 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full flex flex-col max-h-[85vh] animate-fade-in-up">
+                                <div className="bg-slate-800 text-white p-4 flex justify-between items-center shrink-0 rounded-t-xl">
+                                    <h3 className="font-bold flex items-center gap-2">
+                                        <Icon name="History" className="h-5 w-5" />
+                                        已實現損益紀錄 (賣出歷史)
+                                    </h3>
+                                    <button onClick={() => setIsHistoryOpen(false)} className="text-slate-300 hover:text-white"><Icon name="X" className="h-5 w-5"/></button>
+                                </div>
+                                <div className="p-4 overflow-y-auto">
+                                    {soldHistory.length === 0 ? (
+                                        <p className="text-center text-gray-400 py-10">尚無賣出紀錄。</p>
+                                    ) : (
+                                        <table className="w-full text-sm text-left">
+                                            <thead className="bg-gray-100 text-gray-600 font-bold">
+                                                <tr>
+                                                    <th className="p-3">賣出日期</th>
+                                                    <th className="p-3">股票</th>
+                                                    <th className="p-3 text-right">股數</th>
+                                                    <th className="p-3 text-right">賣價</th>
+                                                    <th className="p-3 text-right">成本</th>
+                                                    <th className="p-3 text-right">損益</th>
+                                                    <th className="p-3 text-right">報酬率</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                                {soldHistory.map(record => (
+                                                    <tr key={record.id} className="hover:bg-gray-50">
+                                                        <td className="p-3 text-gray-600">{record.sellDate}</td>
+                                                        <td className="p-3 font-bold">{record.name} <span className="text-xs text-gray-400">({record.code})</span></td>
+                                                        <td className="p-3 text-right font-mono">{record.shares}</td>
+                                                        <td className="p-3 text-right font-mono">${record.sellPrice}</td>
+                                                        <td className="p-3 text-right font-mono text-gray-500">${record.buyPrice}</td>
+                                                        <td className={`p-3 text-right font-bold ${record.pl >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                                            {record.pl > 0 ? '+' : ''}{record.pl.toLocaleString()}
+                                                        </td>
+                                                        <td className={`p-3 text-right font-bold ${record.pl >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                                            {record.roi.toFixed(2)}%
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                                <div className="p-4 border-t bg-gray-50 text-right">
+                                    <span className="font-bold text-gray-600 mr-2">累計已實現損益:</span>
+                                    <span className={`text-xl font-bold ${realizedPL >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                        {realizedPL > 0 ? '+' : ''}{realizedPL.toLocaleString()}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 資料匯入視窗 (保持不變) */}
                     {isDataImportOpen && (
                         <div className="fixed inset-0 bg-black/50 z-30 flex items-center justify-center p-4">
                             <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-fade-in-up">
@@ -718,7 +865,7 @@
                         </div>
                     )}
 
-                    {/* 價格更新視窗 */}
+                    {/* 價格更新視窗 (保持不變) */}
                     {isPriceUpdateOpen && (
                         <div className="fixed inset-0 bg-black/50 z-30 flex items-center justify-center p-4">
                             <div className="bg-white rounded-xl shadow-2xl max-w-4xl w-full flex flex-col max-h-[90vh] animate-fade-in-up">
@@ -806,16 +953,24 @@
                                 </p>
                             </div>
                             <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition">
-                                <p className="text-gray-500 text-xs md:text-sm font-medium">未實現損益</p>
+                                <p className="text-gray-500 text-xs md:text-sm font-medium">未實現損益 (庫存)</p>
                                 <p className={`text-lg md:text-2xl font-bold mt-2 flex items-center gap-1 ${totalPL >= 0 ? 'text-red-500' : 'text-green-500'}`}>
                                     {totalPL >= 0 ? <Icon name="TrendingUp" className="h-4 w-4 md:h-5 md:w-5"/> : <Icon name="TrendingDown" className="h-4 w-4 md:h-5 md:w-5"/>}
                                     ${Math.abs(totalPL).toLocaleString()}
                                 </p>
                             </div>
-                            <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition">
-                                <p className="text-gray-500 text-xs md:text-sm font-medium">總報酬率</p>
-                                <p className={`text-lg md:text-2xl font-bold mt-2 ${totalROI >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                    {totalROI.toFixed(2)}%
+                            <div 
+                                className="bg-slate-800 p-4 md:p-6 rounded-xl shadow-sm border border-slate-700 hover:shadow-md transition cursor-pointer group relative overflow-hidden"
+                                onClick={() => setIsHistoryOpen(true)}
+                            >
+                                <div className="absolute right-2 top-2 opacity-10 group-hover:opacity-20 transition">
+                                    <Icon name="History" className="h-16 w-16 text-white"/>
+                                </div>
+                                <p className="text-slate-400 text-xs md:text-sm font-medium flex items-center gap-1">
+                                    已實現損益 (點擊查看)
+                                </p>
+                                <p className={`text-lg md:text-2xl font-bold mt-2 ${realizedPL >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                                    {realizedPL > 0 ? '+' : ''}{realizedPL.toLocaleString()}
                                 </p>
                             </div>
                         </div>
@@ -1014,6 +1169,13 @@
                                                     <td className="p-4 text-center">
                                                         <div className="flex justify-center gap-2">
                                                             <button 
+                                                                onClick={() => handleOpenSellModal(stock)}
+                                                                className="text-gray-400 hover:text-green-500 transition p-2 hover:bg-green-50 rounded-full"
+                                                                title="賣出/停損"
+                                                            >
+                                                                <Icon name="MinusCircle" className="h-4 w-4" />
+                                                            </button>
+                                                            <button 
                                                                 onClick={() => handleEditStock(stock)}
                                                                 className="text-gray-400 hover:text-orange-500 transition p-2 hover:bg-orange-50 rounded-full"
                                                                 title="編輯"
@@ -1040,8 +1202,8 @@
                                     <div className="bg-gray-100 p-4 rounded-full mb-4">
                                         <Icon name="PieChart" className="h-8 w-8 text-gray-300" />
                                     </div>
-                                    <p className="text-lg font-medium text-gray-500">目前投資組合為空</p>
-                                    <p className="text-sm mt-1">請點擊上方「新增交易紀錄」開始管理您的資產</p>
+                                    <p className="text-lg font-medium text-gray-500">目前無庫存股票</p>
+                                    <p className="text-sm mt-1">點擊上方「新增交易紀錄」開始；或查看已實現損益</p>
                                 </div>
                             )}
                         </div>
