@@ -144,7 +144,10 @@
                 users: <g><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></g>,
                 eye: <g><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></g>,
                 filecode: <g><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/></g>,
-                alertcircle: <g><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></g>
+                alertcircle: <g><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></g>,
+                // 新增：箭頭圖示
+                chevrondown: <g><polyline points="6 9 12 15 18 9"/></g>,
+                chevronup: <g><polyline points="18 15 12 9 6 15"/></g>
             };
             const iconKey = name.toLowerCase();
             return (
@@ -171,7 +174,7 @@
             const TAX_RATE = 0.003;
             const TAX_RATE_DAY_TRADE = 0.0015;
 
-            // --- 狀態管理 (整合自定義 Hook) ---
+            // --- 狀態管理 ---
             const [inventory, setInventory] = useLocalStorage('sp_inv', 'myStockPortfolio', []);
             const [ledger, setLedger] = useLocalStorage('sp_ledger', 'myStockSoldHistory', []);
             const [cash, setCash] = useLocalStorage('sp_cash', null, 1000000);
@@ -187,7 +190,10 @@
             const [currentTime, setCurrentTime] = useState(new Date());
             const [searchTerm, setSearchTerm] = useState('');
             const [isAutoUpdate, setIsAutoUpdate] = useState(false);
-            const [fetchStatus, setFetchStatus] = useState('idle'); // idle, fetching, error, success
+            const [fetchStatus, setFetchStatus] = useState('idle');
+            
+            // 批次明細展開狀態
+            const [expandedRows, setExpandedRows] = useState(new Set());
 
             // 統一交易表單
             const [formData, setFormData] = useState({ 
@@ -202,6 +208,17 @@
                 return () => clearInterval(timer);
             }, []);
 
+            // 展開/收起 批次明細
+            const toggleRow = (code) => {
+                const newSet = new Set(expandedRows);
+                if (newSet.has(code)) {
+                    newSet.delete(code);
+                } else {
+                    newSet.add(code);
+                }
+                setExpandedRows(newSet);
+            };
+
             // ==========================================
             // 真實 API 股價抓取 (Yahoo Finance + CORS Proxy)
             // ==========================================
@@ -213,13 +230,11 @@
                 
                 setFetchStatus('fetching');
                 try {
-                    // 組裝查詢代號 (例如 2330.TW, 8069.TWO)
                     const symbols = inventory.map(s => {
                         const suffix = (s.market === '上櫃' || s.market === '興櫃') ? '.TWO' : '.TW';
                         return `${s.code}${suffix}`;
                     }).join(',');
 
-                    // 使用 allorigins 作為 CORS 代理，加上 timestamp 防止快取
                     const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&_=${Date.now()}`;
                     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
                     
@@ -227,24 +242,21 @@
                     if (!res.ok) throw new Error('Network response was not ok');
                     const data = await res.json();
                     
-                    // 解析 allorigins 返回的 contents 字串
                     const parsedData = JSON.parse(data.contents);
                     const quotes = parsedData.quoteResponse?.result || [];
                     
-                    // 建立代碼與價格的 Map
                     const priceMap = {};
                     quotes.forEach(q => {
-                        const baseCode = q.symbol.split('.')[0]; // 移除 .TW 或 .TWO
+                        const baseCode = q.symbol.split('.')[0]; 
                         priceMap[baseCode] = q.regularMarketPrice;
                     });
 
-                    // 更新庫存價格
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
                     
                     setInventory(prev => prev.map(s => {
                         if (priceMap[s.code]) {
-                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (真實即時)' };
+                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (即時)' };
                         }
                         return s;
                     }));
@@ -252,9 +264,8 @@
                     setFetchStatus('success');
                     if (isManual) alert('已成功抓取最新真實股價！');
                 } catch (error) {
-                    console.error("即時報價抓取失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert('報價連線失敗，請稍後再試或檢查網路連線。');
+                    if (isManual) alert('報價連線失敗，請稍後再試。');
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
@@ -264,16 +275,15 @@
             useEffect(() => {
                 let interval;
                 if (isAutoUpdate) {
-                    // 啟動時先抓一次
                     fetchRealTimePrices(false);
                     interval = setInterval(() => {
                         fetchRealTimePrices(false);
                     }, 10000);
                 }
                 return () => clearInterval(interval);
-            }, [isAutoUpdate, inventory.length]); // 相依性包含 inventory.length，當庫存增減時重新綁定
+            }, [isAutoUpdate, inventory.length]); 
 
-            // --- 效能優化區：使用 useMemo 緩存計算結果 ---
+            // --- 效能優化區：緩存計算結果 ---
             const { mktValue, totalCost, unrealizedPL, realizedPL, totalDividend } = useMemo(() => {
                 const mktVal = inventory.reduce((acc, s) => acc + (s.currentPrice * s.shares), 0);
                 const cost = inventory.reduce((acc, s) => acc + (s.avgCost * s.shares), 0);
@@ -326,7 +336,7 @@
                 let newInv = [...inventory];
                 let newLedger = [...ledger];
 
-                // 編輯資料 (不影響資金與帳本)
+                // 編輯資料
                 if (type === 'edit') {
                     const idx = newInv.findIndex(s => s.id === modal.stock.id);
                     if (idx >= 0) {
@@ -355,6 +365,7 @@
                     if (idx >= 0) {
                         const old = newInv[idx];
                         const totalShares = old.shares + shares;
+                        // 加權平均計算
                         const totalCostVal = (old.avgCost * old.shares) + cost;
                         newInv[idx] = { ...old, shares: totalShares, avgCost: Number((totalCostVal / totalShares).toFixed(2)), currentPrice: price, eps: Number(eps)||old.eps, pe: Number(pe)||old.pe };
                     } else {
@@ -367,7 +378,7 @@
                         });
                     }
                     newCash -= cost;
-                    newLedger.unshift({ id: Date.now(), date, type: '買進', name, code, shares, price, amount: -cost, balance: newCash, note: `手續費 ${fee}` });
+                    newLedger.unshift({ id: Date.now(), date, type: '買進', name, code, shares, price, amount: -cost, balance: newCash, fee, tax: 0 });
                 
                 // 賣出/減碼
                 } else if (type === 'sell') {
@@ -386,7 +397,7 @@
                     else newInv[idx] = { ...old, shares: old.shares - shares, currentPrice: price };
                     
                     newCash += income;
-                    newLedger.unshift({ id: Date.now(), date, type: '賣出', name, code, shares, price, amount: income, balance: newCash, profit, isDayTrade, note: `獲利 ${profit} (稅${tax} 費${fee})` });
+                    newLedger.unshift({ id: Date.now(), date, type: '賣出', name, code, shares, price, amount: income, balance: newCash, profit, isDayTrade, fee, tax });
 
                 // 股息入帳
                 } else if (type === 'dividend') {
@@ -479,8 +490,8 @@
                             <div className="hidden md:block text-right mr-2">
                                 <div className="text-emerald-400 font-mono font-bold text-sm">{currentTime.toLocaleTimeString()}</div>
                             </div>
-                            <button onClick={() => setSidePanel('resources')} className="p-2 hover:bg-slate-800 rounded-full transition text-slate-300 hover:text-white"><Icon name="globe"/></button>
-                            <button onClick={() => setSidePanel('settings')} className="p-2 hover:bg-slate-800 rounded-full transition text-slate-300 hover:text-white"><Icon name="settings"/></button>
+                            <button onClick={() => setSidePanel('resources')} className="p-2 hover:bg-slate-800 rounded-full transition text-slate-300 hover:text-white" title="常用資源"><Icon name="globe"/></button>
+                            <button onClick={() => setSidePanel('settings')} className="p-2 hover:bg-slate-800 rounded-full transition text-slate-300 hover:text-white" title="設定"><Icon name="settings"/></button>
                         </div>
                     </header>
 
@@ -570,7 +581,7 @@
                     </div>
 
                     {/* Main Content */}
-                    <div className="flex-1 overflow-y-auto p-4 scroll-smooth">
+                    <div className="flex-1 overflow-y-auto bg-gray-50 p-4 scroll-smooth">
                         
                         {/* Inventory */}
                         {view === 'inventory' && (
@@ -583,10 +594,10 @@
                                             <thead className="bg-slate-50 text-slate-600 font-bold border-b">
                                                 <tr>
                                                     <th className="p-4 pl-6">標的 / 進階分析</th>
-                                                    <th className="p-4 text-right">股數</th>
-                                                    <th className="p-4 text-right">均價(含費)</th>
+                                                    <th className="p-4 text-right">庫存股數</th>
+                                                    <th className="p-4 text-right text-indigo-700">購買均價 (加權)</th>
                                                     <th className="p-4 text-right text-blue-700">市價</th>
-                                                    <th className="p-4 text-right">市值 / 損益</th>
+                                                    <th className="p-4 text-right">市值 / 帳面損益</th>
                                                     <th className="p-4 text-center">操作 (買/賣/編/刪)</th>
                                                 </tr>
                                             </thead>
@@ -597,44 +608,95 @@
                                                     const pl = val - cost;
                                                     const roi = cost > 0 ? (pl / cost) * 100 : 0;
                                                     const fairVal = (stock.eps && stock.pe) ? (stock.eps * stock.pe).toFixed(2) : null;
+                                                    const isExpanded = expandedRows.has(stock.code);
 
                                                     return (
-                                                        <tr key={stock.id} className="hover:bg-slate-50 group">
-                                                            <td className="p-4 pl-6">
-                                                                <div className="flex items-center gap-2 mb-1">
-                                                                    <span className="font-bold text-slate-900 text-base">{stock.name}</span>
-                                                                    <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">{stock.code}</span>
-                                                                    <a href={getStockLink(stock.code, stock.market)} target="_blank" className="text-gray-300 hover:text-blue-500"><Icon name="external" size={14}/></a>
-                                                                </div>
-                                                                <div className="text-[10px] text-gray-400 flex gap-3">
-                                                                    {fairVal && <span>合理價: <b className="text-blue-500">${fairVal}</b></span>}
-                                                                    {stock.eps > 0 && <span>EPS: {stock.eps}</span>}
-                                                                    <span>更: {stock.lastUpdate || '-'}</span>
-                                                                </div>
-                                                            </td>
-                                                            <td className="p-4 text-right font-mono font-medium">{stock.shares.toLocaleString()}</td>
-                                                            <td className="p-4 text-right font-mono text-gray-500">${stock.avgCost.toLocaleString()}</td>
-                                                            <td className="p-4 text-right font-mono font-bold text-blue-600">
-                                                                <div className={`transition-opacity duration-300 ${fetchStatus==='fetching' ? 'opacity-50' : 'opacity-100'}`}>
-                                                                    ${stock.currentPrice}
-                                                                </div>
-                                                            </td>
-                                                            <td className="p-4 text-right">
-                                                                <div className="font-mono text-slate-800">${Math.floor(val).toLocaleString()}</div>
-                                                                <div className={`font-bold text-xs ${pl >= 0 ? 'text-red-500' : 'text-green-500'}`}>
-                                                                    {pl >= 0 ? '+' : ''}{Math.floor(pl).toLocaleString()} ({roi.toFixed(2)}%)
-                                                                </div>
-                                                            </td>
-                                                            <td className="p-4 text-center">
-                                                                <div className="flex justify-center gap-2">
-                                                                    <button onClick={() => openModal('buy', stock)} className="p-2 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-100" title="加碼買進"><Icon name="plus" size={16}/></button>
-                                                                    <button onClick={() => openModal('sell', stock)} className="p-2 bg-orange-50 text-orange-600 rounded-full hover:bg-orange-100" title="減碼賣出"><Icon name="minus" size={16}/></button>
-                                                                    <button onClick={() => openModal('dividend', stock)} className="p-2 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100" title="領取現金股利"><Icon name="dollar" size={16}/></button>
-                                                                    <button onClick={() => openModal('edit', stock)} className="p-2 bg-slate-100 text-slate-600 rounded-full hover:bg-slate-200" title="編輯進階分析資料"><Icon name="edit" size={16}/></button>
-                                                                    <button onClick={() => removeStock(stock.id)} className="p-2 text-slate-300 hover:text-red-500" title="移除紀錄"><Icon name="trash" size={16}/></button>
-                                                                </div>
-                                                            </td>
-                                                        </tr>
+                                                        <React.Fragment key={stock.id}>
+                                                            <tr className={`hover:bg-slate-50 group cursor-pointer ${isExpanded ? 'bg-blue-50/30' : ''}`} onClick={() => toggleRow(stock.code)}>
+                                                                <td className="p-4 pl-6">
+                                                                    <div className="flex items-center gap-2 mb-1">
+                                                                        <Icon name={isExpanded ? 'chevronup' : 'chevrondown'} size={16} className="text-gray-400 hover:text-blue-500" />
+                                                                        <span className="font-bold text-slate-900 text-base">{stock.name}</span>
+                                                                        <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-mono">{stock.code}</span>
+                                                                        <a href={getStockLink(stock.code, stock.market)} target="_blank" className="text-gray-300 hover:text-blue-500" onClick={e => e.stopPropagation()}><Icon name="external" size={14}/></a>
+                                                                    </div>
+                                                                    <div className="text-[10px] text-gray-400 flex gap-3 ml-6">
+                                                                        {fairVal && <span>合理價: <b className="text-blue-500">${fairVal}</b></span>}
+                                                                        {stock.eps > 0 && <span>EPS: {stock.eps}</span>}
+                                                                        <span>更: {stock.lastUpdate || '-'}</span>
+                                                                    </div>
+                                                                </td>
+                                                                <td className="p-4 text-right font-mono font-medium">{stock.shares.toLocaleString()}</td>
+                                                                {/* 強調購買均價 */}
+                                                                <td className="p-4 text-right font-mono font-bold text-indigo-700 bg-indigo-50/30">${stock.avgCost.toLocaleString()}</td>
+                                                                <td className="p-4 text-right font-mono font-bold text-blue-600">
+                                                                    <div className={`transition-opacity duration-300 ${fetchStatus==='fetching' ? 'opacity-50' : 'opacity-100'}`}>
+                                                                        ${stock.currentPrice}
+                                                                    </div>
+                                                                </td>
+                                                                <td className="p-4 text-right">
+                                                                    <div className="font-mono text-slate-800">${Math.floor(val).toLocaleString()}</div>
+                                                                    <div className={`font-bold text-xs ${pl >= 0 ? 'text-red-500' : 'text-green-500'}`}>
+                                                                        {pl >= 0 ? '+' : ''}{Math.floor(pl).toLocaleString()} ({roi.toFixed(2)}%)
+                                                                    </div>
+                                                                </td>
+                                                                <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
+                                                                    <div className="flex justify-center gap-2">
+                                                                        <button onClick={() => openModal('buy', stock)} className="p-2 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-100" title="加碼買進"><Icon name="plus" size={16}/></button>
+                                                                        <button onClick={() => openModal('sell', stock)} className="p-2 bg-orange-50 text-orange-600 rounded-full hover:bg-orange-100" title="減碼賣出"><Icon name="minus" size={16}/></button>
+                                                                        <button onClick={() => openModal('dividend', stock)} className="p-2 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100" title="領取現金股利"><Icon name="dollar" size={16}/></button>
+                                                                        <button onClick={() => openModal('edit', stock)} className="p-2 bg-slate-100 text-slate-600 rounded-full hover:bg-slate-200" title="編輯進階分析資料"><Icon name="edit" size={16}/></button>
+                                                                        <button onClick={() => removeStock(stock.id)} className="p-2 text-slate-300 hover:text-red-500" title="移除紀錄"><Icon name="trash" size={16}/></button>
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                            {/* 展開顯示該股票的分批交易明細 */}
+                                                            {isExpanded && (
+                                                                <tr className="bg-slate-100/50 border-b border-gray-200 anim-fade">
+                                                                    <td colSpan="6" className="p-4 pl-12">
+                                                                        <div className="text-xs font-bold text-gray-500 mb-2 flex items-center gap-1">
+                                                                            <Icon name="history" size={12}/> 歷史批次明細 (僅顯示買賣紀錄)
+                                                                        </div>
+                                                                        <div className="bg-white rounded border border-gray-200 overflow-hidden shadow-sm">
+                                                                            <table className="w-full text-xs text-left">
+                                                                                <thead className="bg-gray-50 text-gray-500">
+                                                                                    <tr>
+                                                                                        <th className="p-2 pl-4">日期</th>
+                                                                                        <th className="p-2">動作</th>
+                                                                                        <th className="p-2 text-right">成交單價</th>
+                                                                                        <th className="p-2 text-right">股數</th>
+                                                                                        <th className="p-2 text-right">稅費</th>
+                                                                                        <th className="p-2 text-right">收付總額</th>
+                                                                                    </tr>
+                                                                                </thead>
+                                                                                <tbody className="divide-y divide-gray-100">
+                                                                                    {ledger.filter(l => l.code === stock.code && (l.type === '買進' || l.type === '賣出')).length === 0 ? (
+                                                                                        <tr><td colSpan="6" className="p-3 text-center text-gray-400">無歷史紀錄</td></tr>
+                                                                                    ) : (
+                                                                                        ledger.filter(l => l.code === stock.code && (l.type === '買進' || l.type === '賣出')).map(l => (
+                                                                                            <tr key={l.id} className="hover:bg-gray-50">
+                                                                                                <td className="p-2 pl-4 text-gray-500">{l.date}</td>
+                                                                                                <td className="p-2">
+                                                                                                    <span className={`px-1.5 py-0.5 rounded font-bold ${l.type === '買進' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                                                                                        {l.type}
+                                                                                                    </span>
+                                                                                                </td>
+                                                                                                <td className="p-2 text-right font-mono">${l.price}</td>
+                                                                                                <td className="p-2 text-right font-mono">{l.shares}</td>
+                                                                                                <td className="p-2 text-right font-mono text-gray-400">${(l.fee||0) + (l.tax||0)}</td>
+                                                                                                <td className={`p-2 text-right font-bold font-mono ${l.type === '買進' ? 'text-gray-700' : 'text-green-600'}`}>
+                                                                                                    {l.type === '買進' ? `-${Math.abs(l.amount).toLocaleString()}` : `+${l.amount.toLocaleString()}`}
+                                                                                                </td>
+                                                                                            </tr>
+                                                                                        ))
+                                                                                    )}
+                                                                                </tbody>
+                                                                            </table>
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            )}
+                                                        </React.Fragment>
                                                     );
                                                 })}
                                             </tbody>
