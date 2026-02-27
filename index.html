@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>智慧資產管家 (極致旗艦版)</title>
     
-    <!-- 核心函式庫 -->
+    <!-- 核心函式庫 (加上 crossorigin 確保安全載入) -->
     <script crossorigin="anonymous" src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin="anonymous" src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -155,7 +155,7 @@
         };
 
         // ==========================================
-        // 3. UI 圖示庫 (徹底修復 SVG 包覆結構)
+        // 3. UI 圖示庫
         // ==========================================
         const Icon = ({ name, size = 20, className = "" }) => {
             const icons = {
@@ -208,15 +208,15 @@
             const TAX_RATE_DAY_TRADE = 0.0015;
 
             // --- 狀態管理 ---
-            const [inventory, setInventory] = useLocalStorage('v7_sp_inv', 'v6_sp_inv', []);
-            const [ledger, setLedger] = useLocalStorage('v7_sp_ledger', 'v6_sp_ledger', []);
-            const [cash, setCash] = useLocalStorage('v7_sp_cash', 'v6_sp_cash', 1000000);
-            const [settings, setSettings] = useLocalStorage('v7_sp_settings', 'v6_sp_settings', { discount: 0.6, minFee: 20 });
-            const [masterData, setMasterData] = useLocalStorage('v7_sp_master', 'v6_sp_master', defaultMasterData);
-            const [dataDate, setDataDate] = useLocalStorage('v7_sp_date', 'v6_sp_date', null);
-            const [userOpenCount, setUserOpenCount] = useLocalStorage('v7_sp_appOpenCount', 'v6_sp_appOpenCount', 0);
+            const [inventory, setInventory] = useLocalStorage('v8_sp_inv', 'v7_sp_inv', []);
+            const [ledger, setLedger] = useLocalStorage('v8_sp_ledger', 'v7_sp_ledger', []);
+            const [cash, setCash] = useLocalStorage('v8_sp_cash', 'v7_sp_cash', 1000000);
+            const [settings, setSettings] = useLocalStorage('v8_sp_settings', 'v7_sp_settings', { discount: 0.6, minFee: 20 });
+            const [masterData, setMasterData] = useLocalStorage('v8_sp_master', 'v7_sp_master', defaultMasterData);
+            const [dataDate, setDataDate] = useLocalStorage('v8_sp_date', 'v7_sp_date', null);
+            const [userOpenCount, setUserOpenCount] = useLocalStorage('v8_sp_appOpenCount', 'v7_sp_appOpenCount', 0);
 
-            // 防呆處理，確保資料型態為陣列
+            // 防呆處理
             const safeInventory = Array.isArray(inventory) ? inventory : [];
             const safeLedger = Array.isArray(ledger) ? ledger : [];
             const safeCash = (typeof cash === 'number' && !isNaN(cash)) ? cash : 1000000;
@@ -254,7 +254,7 @@
             };
 
             // ==========================================
-            // 真實 API 股價抓取 (改用 Google Finance + CORS Proxy)
+            // 強制無快取 API 股價抓取 (Google Finance + Yahoo 雙保險)
             // ==========================================
             const fetchRealTimePrices = async (isManual = false) => {
                 if (safeInventory.length === 0) {
@@ -263,7 +263,6 @@
                 }
                 setFetchStatus('fetching');
                 try {
-                    // 取出所有不重複的股票代號與市場
                     const uniqueStocks = [];
                     const seen = new Set();
                     safeInventory.forEach((s) => {
@@ -273,25 +272,29 @@
                         }
                     });
 
-                    // Google Finance 需逐檔抓取網頁原始碼，使用 Promise.all 併發執行
+                    // 併發抓取所有股票
                     const pricePromises = uniqueStocks.map(async (stock) => {
                         try {
                             const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
-                            const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}`;
-                            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+                            // 加上隨機數徹底無視任何快取
+                            const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW&_rnd=${Math.random()}`;
+                            // 強制代理伺服器不要使用快取 (disableCache=true) & raw 返回最原始 HTML
+                            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
                             
                             const res = await fetch(proxyUrl);
-                            if (!res.ok) throw new Error('Network error');
-                            const data = await res.json();
+                            if (!res.ok) throw new Error('Google HTML fetch error');
+                            const html = await res.text();
                             
                             const parser = new DOMParser();
-                            const doc = parser.parseFromString(data.contents, 'text/html');
+                            const doc = parser.parseFromString(html, 'text/html');
                             
                             let price = null;
+                            // 策略1: 尋找隱藏的精準屬性
                             const priceNode = doc.querySelector('div[data-last-price]');
                             if (priceNode) {
                                 price = parseFloat(priceNode.getAttribute('data-last-price'));
                             } 
+                            // 策略2: 尋找顯示的價格欄位
                             if (!price || isNaN(price)) {
                                 const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
                                 if (fallbackNode) {
@@ -302,6 +305,17 @@
                             if (price && !isNaN(price)) {
                                 return { code: stock.code, price: price };
                             }
+
+                            // 策略3: 備用 Yahoo API (萬一 Google 改版)
+                            const yTarget = `https://query1.finance.yahoo.com/v8/finance/chart/${stock.code}.${exchange === 'TWO' ? 'TWO' : 'TW'}?interval=1m&range=1d&_rnd=${Math.random()}`;
+                            const yProxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(yTarget)}&disableCache=true`;
+                            const yRes = await fetch(yProxy);
+                            const yData = await yRes.json();
+                            const yPrice = yData?.chart?.result?.[0]?.meta?.regularMarketPrice;
+                            if (yPrice && !isNaN(yPrice)) {
+                                return { code: stock.code, price: yPrice };
+                            }
+
                             return { code: stock.code, price: null };
                         } catch (e) {
                             return { code: stock.code, price: null };
@@ -319,30 +333,29 @@
                         }
                     });
 
-                    if (updatedCount === 0) throw new Error("無法從 Google 股市獲取有效報價");
+                    if (updatedCount === 0) throw new Error("API 傳回空資料");
 
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
                     
                     setInventory((prev) => prev.map((s) => {
                         if (priceMap[s.code]) {
-                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (Google 即時)' };
+                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (即時)' };
                         }
                         return s;
                     }));
 
                     setFetchStatus('success');
-                    if (isManual) alert('已成功從 Google 股市抓取最新真實股價！');
+                    if (isManual) alert('成功！市價已即時同步更新。');
                 } catch (error) {
-                    console.error("即時報價抓取失敗:", error);
+                    console.error("更新失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert('Google 報價連線失敗。您可以透過「編輯」手動輸入市價。');
+                    if (isManual) alert('連線伺服器失敗，請稍後再試。');
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
             };
 
-            // 自動更新計時器 (每 10 秒)
             useEffect(() => {
                 let interval;
                 if (isAutoUpdate) {
@@ -356,7 +369,7 @@
             const calcFee = (amt) => Math.max(Math.floor(amt * FEE_RATE * settings.discount), settings.minFee);
             const calcTax = (amt, isDayTrade) => Math.floor(amt * (isDayTrade ? TAX_RATE_DAY_TRADE : TAX_RATE));
 
-            // --- 效能優化區：使用 useMemo 緩存計算結果 ---
+            // --- 效能優化區：使用 useMemo 將計算抽離，保證 JSX 穩定渲染 ---
             const { mktValue, totalCost, unrealizedPL, realizedPL, totalDividend } = useMemo(() => {
                 const mktVal = safeInventory.reduce((acc, s) => acc + (s.currentPrice * s.shares), 0);
                 const cost = safeInventory.reduce((acc, s) => acc + (s.avgCost * s.shares), 0);
@@ -696,8 +709,8 @@
                                                 <tr>
                                                     <th className="p-4 pl-6">標的 / 進階分析</th>
                                                     <th className="p-4 text-right">庫存股數</th>
-                                                    <th className="p-4 text-right text-indigo-700">購買均價 (加權)</th>
-                                                    <th className="p-4 text-right text-blue-700">市價</th>
+                                                    <th className="p-4 text-right text-indigo-700">購入均價 (成本)</th>
+                                                    <th className="p-4 text-right text-blue-700">即時市價</th>
                                                     <th className="p-4 text-right">市值 / 帳面損益</th>
                                                     <th className="p-4 text-center">操作 (買/賣/編/刪)</th>
                                                 </tr>
@@ -774,24 +787,23 @@
                                                                                 <tbody className="divide-y divide-gray-100">
                                                                                     {historyList.length === 0 ? (
                                                                                         <tr><td colSpan="6" className="p-3 text-center text-gray-400">無歷史紀錄</td></tr>
-                                                                                    ) : (
-                                                                                        historyList.map((l) => (
-                                                                                            <tr key={l.id} className="hover:bg-gray-50">
-                                                                                                <td className="p-2 pl-4 text-gray-500">{l.date}</td>
-                                                                                                <td className="p-2">
-                                                                                                    <span className={`px-1.5 py-0.5 rounded font-bold ${l.type === '買進' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                                                                                                        {l.type}
-                                                                                                    </span>
-                                                                                                </td>
-                                                                                                <td className="p-2 text-right font-mono">${l.price}</td>
-                                                                                                <td className="p-2 text-right font-mono">{l.shares}</td>
-                                                                                                <td className="p-2 text-right font-mono text-gray-400">${(l.fee||0) + (l.tax||0)}</td>
-                                                                                                <td className={`p-2 text-right font-bold font-mono ${l.type === '買進' ? 'text-gray-700' : 'text-green-600'}`}>
-                                                                                                    {l.type === '買進' ? `-${Math.abs(l.amount).toLocaleString()}` : `+${l.amount.toLocaleString()}`}
-                                                                                                </td>
-                                                                                            </tr>
-                                                                                        ))
-                                                                                    )}
+                                                                                    ) : null}
+                                                                                    {historyList.length > 0 ? historyList.map((l) => (
+                                                                                        <tr key={l.id} className="hover:bg-gray-50">
+                                                                                            <td className="p-2 pl-4 text-gray-500">{l.date}</td>
+                                                                                            <td className="p-2">
+                                                                                                <span className={`px-1.5 py-0.5 rounded font-bold ${l.type === '買進' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
+                                                                                                    {l.type}
+                                                                                                </span>
+                                                                                            </td>
+                                                                                            <td className="p-2 text-right font-mono">${l.price}</td>
+                                                                                            <td className="p-2 text-right font-mono">{l.shares}</td>
+                                                                                            <td className="p-2 text-right font-mono text-gray-400">${(l.fee||0) + (l.tax||0)}</td>
+                                                                                            <td className={`p-2 text-right font-bold font-mono ${l.type === '買進' ? 'text-gray-700' : 'text-green-600'}`}>
+                                                                                                {l.type === '買進' ? `-${Math.abs(l.amount).toLocaleString()}` : `+${l.amount.toLocaleString()}`}
+                                                                                            </td>
+                                                                                        </tr>
+                                                                                    )) : null}
                                                                                 </tbody>
                                                                             </table>
                                                                         </div>
@@ -1036,7 +1048,11 @@
         };
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<ErrorBoundary><App /></ErrorBoundary>);
+        root.render(
+            <ErrorBoundary>
+                <App />
+            </ErrorBoundary>
+        );
     </script>
 </body>
 </html>
