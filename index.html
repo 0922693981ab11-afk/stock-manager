@@ -54,13 +54,13 @@
                     return (
                         <div className="p-8 max-w-2xl mx-auto mt-10 bg-white rounded-xl shadow-lg border border-red-200">
                             <h2 className="text-2xl font-bold text-red-600 mb-4">系統發生預期外的錯誤</h2>
-                            <p className="text-gray-600 mb-4">可能是暫存資料衝突或連線異常。請點擊下方按鈕重置系統。</p>
-                            <code className="block p-4 bg-gray-100 text-red-500 rounded text-sm mb-4 overflow-auto">
+                            <p className="text-gray-600 mb-4">這可能是因為瀏覽器的暫存資料格式衝突所引起。請點擊下方按鈕重置系統。</p>
+                            <code className="block p-4 bg-gray-100 text-red-500 rounded text-sm mb-4 overflow-auto whitespace-pre-wrap">
                                 {this.state.error ? this.state.error.toString() : "Unknown Error"}
                             </code>
                             <button 
-                                onClick={() => { localStorage.clear(); window.location.reload(); }} 
-                                className="bg-red-500 text-white px-6 py-2 rounded-lg font-bold hover:bg-red-600"
+                                onClick={() => { window.localStorage.clear(); window.location.reload(); }} 
+                                className="bg-red-500 text-white px-6 py-2 rounded-lg font-bold hover:bg-red-600 shadow"
                             >
                                 一鍵清除暫存並重新載入
                             </button>
@@ -207,14 +207,15 @@
             const TAX_RATE_DAY_TRADE = 0.0015;
 
             // --- 狀態管理 (使用強健版 Hook 保證不當機) ---
-            const [inventory, setInventory] = useLocalStorage('v5_sp_inv', 'sp_inv', []);
-            const [ledger, setLedger] = useLocalStorage('v5_sp_ledger', 'sp_ledger', []);
-            const [cash, setCash] = useLocalStorage('v5_sp_cash', 'sp_cash', 1000000);
-            const [settings, setSettings] = useLocalStorage('v5_sp_settings', 'sp_settings', { discount: 0.6, minFee: 20 });
-            const [masterData, setMasterData] = useLocalStorage('v5_sp_master', 'sp_master', defaultMasterData);
-            const [dataDate, setDataDate] = useLocalStorage('v5_sp_date', 'sp_date', null);
-            const [userOpenCount, setUserOpenCount] = useLocalStorage('v5_sp_appOpenCount', 'sp_appOpenCount', 0);
+            const [inventory, setInventory] = useLocalStorage('v6_sp_inv', 'v5_sp_inv', []);
+            const [ledger, setLedger] = useLocalStorage('v6_sp_ledger', 'v5_sp_ledger', []);
+            const [cash, setCash] = useLocalStorage('v6_sp_cash', 'v5_sp_cash', 1000000);
+            const [settings, setSettings] = useLocalStorage('v6_sp_settings', 'v5_sp_settings', { discount: 0.6, minFee: 20 });
+            const [masterData, setMasterData] = useLocalStorage('v6_sp_master', 'v5_sp_master', defaultMasterData);
+            const [dataDate, setDataDate] = useLocalStorage('v6_sp_date', 'sp_date', null);
+            const [userOpenCount, setUserOpenCount] = useLocalStorage('v6_sp_appOpenCount', 'sp_appOpenCount', 0);
 
+            // 保證安全型別 (避免舊資料為 null 時出錯)
             const safeInventory = Array.isArray(inventory) ? inventory : [];
             const safeLedger = Array.isArray(ledger) ? ledger : [];
             const safeCash = typeof cash === 'number' && !isNaN(cash) ? cash : 1000000;
@@ -230,7 +231,7 @@
             const [expandedRows, setExpandedRows] = useState(new Set());
 
             const [formData, setFormData] = useState({ 
-                code: '', name: '', shares: '', price: '', date: '', isDayTrade: false,
+                code: '', name: '', shares: '', price: '', currentPrice: '', date: '', isDayTrade: false,
                 eps: '', pe: '', beta: '', stdDev: ''
             });
 
@@ -266,7 +267,8 @@
                         return `${s.code}${suffix}`;
                     }).join(',');
 
-                    const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&_=${Date.now()}`;
+                    // 使用 v8/finance/spark API, 它比較不會被 Yahoo 的 Cookie 牆擋住
+                    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${symbols}`;
                     const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
                     
                     const res = await fetch(proxyUrl);
@@ -274,13 +276,21 @@
                     const data = await res.json();
                     
                     const parsedData = JSON.parse(data.contents);
-                    const quotes = parsedData.quoteResponse?.result || [];
+                    const quotes = parsedData.spark?.result || [];
                     
                     const priceMap = {};
+                    let updatedCount = 0;
+
                     quotes.forEach((q) => {
                         const baseCode = q.symbol.split('.')[0]; 
-                        priceMap[baseCode] = q.regularMarketPrice;
+                        const price = q.response?.[0]?.meta?.regularMarketPrice;
+                        if (price) {
+                            priceMap[baseCode] = price;
+                            updatedCount++;
+                        }
                     });
+
+                    if (updatedCount === 0) throw new Error("無有效報價");
 
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
@@ -295,8 +305,9 @@
                     setFetchStatus('success');
                     if (isManual) alert('已成功抓取最新真實股價！');
                 } catch (error) {
+                    console.error("即時報價抓取失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert('報價連線失敗，請稍後再試。');
+                    if (isManual) alert('報價連線失敗，Yahoo可能阻擋了連線。您可以透過「編輯」按鈕手動輸入市價。');
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
@@ -343,10 +354,10 @@
 
             const openModal = (type, stock = null) => {
                 const today = new Date().toISOString().split('T')[0];
-                let data = { code: '', name: '', shares: '', price: '', date: today, isDayTrade: false, eps: '', pe: '', beta: '', stdDev: '' };
+                let data = { code: '', name: '', shares: '', price: '', currentPrice: '', date: today, isDayTrade: false, eps: '', pe: '', beta: '', stdDev: '' };
                 
                 if (stock) {
-                    data = { ...data, code: stock.code, name: stock.name, price: stock.currentPrice, eps: stock.eps||'', pe: stock.pe||'', beta: stock.beta||'', stdDev: stock.stdDev||'' };
+                    data = { ...data, code: stock.code, name: stock.name, price: stock.currentPrice, currentPrice: stock.currentPrice, eps: stock.eps||'', pe: stock.pe||'', beta: stock.beta||'', stdDev: stock.stdDev||'' };
                 }
                 if (type === 'deposit' || type === 'withdraw') data.price = 1; 
 
@@ -356,7 +367,7 @@
 
             const handleSubmit = (e) => {
                 e.preventDefault();
-                const { code, name, date, isDayTrade, eps, pe, beta, stdDev } = formData;
+                const { code, name, date, isDayTrade, eps, pe, beta, stdDev, currentPrice } = formData;
                 const shares = Number(formData.shares);
                 const price = Number(formData.price);
                 const type = modal.type;
@@ -370,9 +381,12 @@
                     const idx = newInv.findIndex((s) => s.id === modal.stock?.id);
                     if (idx >= 0) {
                         newInv[idx] = { 
-                            ...newInv[idx], name, 
+                            ...newInv[idx], 
+                            name, 
+                            currentPrice: Number(currentPrice) || newInv[idx].currentPrice,
                             eps: Number(eps)||0, pe: Number(pe)||0, 
-                            beta: Number(beta)||0, stdDev: Number(stdDev)||0 
+                            beta: Number(beta)||0, stdDev: Number(stdDev)||0,
+                            lastUpdate: '手動更新'
                         };
                         setInventory(newInv);
                     }
@@ -506,6 +520,7 @@
 
             return (
                 <div className="flex flex-col h-screen max-w-6xl mx-auto w-full bg-slate-50 md:shadow-2xl relative">
+                    
                     {/* Header */}
                     <header className="bg-slate-900 text-white px-4 py-3 flex justify-between items-center shrink-0 z-30 shadow-md">
                         <div className="flex items-center gap-3">
@@ -514,11 +529,10 @@
                             </div>
                             <div>
                                 <h1 className="font-bold text-lg leading-tight tracking-wide flex items-center">
-                                    智慧資產管家 <span className="text-[10px] bg-yellow-500 text-slate-900 px-1.5 py-0.5 rounded ml-2 font-extrabold hidden md:inline">旗艦版</span>
+                                    智慧資產管家 <span className="text-[10px] bg-yellow-500 text-slate-900 px-1.5 py-0.5 rounded ml-2 font-extrabold hidden md:inline">旗艦完整版</span>
                                 </h1>
                                 <div className="text-[10px] text-slate-400 font-mono mt-0.5 flex items-center gap-2">
                                     <span>(設計者 吳啓仲)</span>
-                                    <a href="mailto:0922693981ab11@gmail.com" className="hover:text-emerald-400 flex items-center gap-1"><Icon name="mail" size={10}/> 聯絡我</a>
                                 </div>
                             </div>
                         </div>
@@ -663,12 +677,11 @@
                                                                     </div>
                                                                     <div className="text-[10px] text-gray-400 flex gap-3 ml-6">
                                                                         {fairVal && <span>合理價: <b className="text-blue-500">${fairVal}</b></span>}
-                                                                        {(stock.eps && stock.eps > 0) ? <span>EPS: {stock.eps}</span> : null}
+                                                                        {(stock.eps && stock.eps > 0) && <span>EPS: {stock.eps}</span>}
                                                                         <span>更: {stock.lastUpdate || '-'}</span>
                                                                     </div>
                                                                 </td>
                                                                 <td className="p-4 text-right font-mono font-medium">{stock.shares.toLocaleString()}</td>
-                                                                {/* 強調購買均價 */}
                                                                 <td className="p-4 text-right font-mono font-bold text-indigo-700 bg-indigo-50/30">${stock.avgCost.toLocaleString()}</td>
                                                                 <td className="p-4 text-right font-mono font-bold text-blue-600">
                                                                     <div className={`transition-opacity duration-300 ${fetchStatus==='fetching' ? 'opacity-50' : 'opacity-100'}`}>
@@ -686,8 +699,8 @@
                                                                         <button onClick={() => openModal('buy', stock)} className="p-2 bg-emerald-50 text-emerald-600 rounded-full hover:bg-emerald-100" title="加碼買進"><Icon name="plus" size={16}/></button>
                                                                         <button onClick={() => openModal('sell', stock)} className="p-2 bg-orange-50 text-orange-600 rounded-full hover:bg-orange-100" title="減碼賣出"><Icon name="minus" size={16}/></button>
                                                                         <button onClick={() => openModal('dividend', stock)} className="p-2 bg-blue-50 text-blue-600 rounded-full hover:bg-blue-100" title="領取現金股利"><Icon name="dollar" size={16}/></button>
-                                                                        <button onClick={() => openModal('edit', stock)} className="p-2 bg-slate-100 text-slate-600 rounded-full hover:bg-slate-200" title="編輯進階分析資料"><Icon name="edit" size={16}/></button>
-                                                                        <button onClick={() => removeStock(stock.id)} className="p-2 text-slate-300 hover:text-red-500" title="移除紀錄"><Icon name="trash" size={16}/></button>
+                                                                        <button onClick={() => openModal('edit', stock)} className="p-2 bg-slate-100 text-slate-600 rounded-full hover:bg-slate-200" title="手動修改市價/分析"><Icon name="edit" size={16}/></button>
+                                                                        <button onClick={() => removeStock(stock.id)} className="p-2 text-slate-300 hover:text-red-500" title="刪除庫存"><Icon name="trash" size={16}/></button>
                                                                     </div>
                                                                 </td>
                                                             </tr>
@@ -838,6 +851,14 @@
                                         </React.Fragment>
                                     )}
 
+                                    {/* 手動更新市價 */}
+                                    {modal.type === 'edit' && (
+                                        <div>
+                                            <label className="text-xs font-bold text-blue-600 mb-1 block">手動更新目前市價</label>
+                                            <input type="number" step="0.01" value={formData.currentPrice} onChange={(e)=>setFormData({...formData, currentPrice:e.target.value})} className="w-full border-2 border-blue-200 p-2 rounded-lg font-bold text-blue-600 focus:border-blue-500 outline-none"/>
+                                        </div>
+                                    )}
+
                                     {/* 單一金額輸入 (股息、出入金) */}
                                     {['dividend', 'deposit', 'withdraw'].includes(modal.type) && (
                                         <div>
@@ -892,12 +913,12 @@
                                     {modal.type !== 'edit' && (
                                         <div>
                                             <label className="text-xs font-bold text-gray-500 mb-1 block">發生日期</label>
-                                            <input type="date" required value={formData.date} onChange={(e)=>setFormData({...formData, date:e.target.value})} className="w-full border rounded-lg p-2.5 outline-none"/>
+                                            <input type="date" required value={formData.date} onChange={(e)=>setFormData({...formData, date:e.target.value})} className="w-full border rounded-lg p-2.5 outline-none focus:border-blue-500"/>
                                         </div>
                                     )}
 
                                     <button type="submit" className={`w-full py-3 rounded-xl text-white font-bold shadow transition active:scale-95 ${
-                                        modal.type === 'sell' ? 'bg-orange-500 hover:bg-orange-600' : modal.type === 'dividend' || modal.type === 'edit' ? 'bg-blue-600' : (modal.type === 'deposit' || modal.type === 'withdraw') ? 'bg-slate-700 hover:bg-slate-800' : 'bg-emerald-600 hover:bg-emerald-700'
+                                        modal.type === 'sell' ? 'bg-orange-500 hover:bg-orange-600' : modal.type === 'dividend' || modal.type === 'edit' ? 'bg-blue-600 hover:bg-blue-700' : (modal.type === 'deposit' || modal.type === 'withdraw') ? 'bg-slate-700 hover:bg-slate-800' : 'bg-emerald-600 hover:bg-emerald-700'
                                     }`}>
                                         確認儲存
                                     </button>
@@ -919,7 +940,7 @@
                                     <div className="space-y-6 flex-1 overflow-y-auto">
                                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
                                             <h4 className="font-bold text-sm text-blue-800 mb-3 flex items-center gap-1"><Icon name="database" size={16}/> 離線代碼庫擴充 (HTML/CSV)</h4>
-                                            <input type="file" accept=".htm,.html,.csv" multiple onChange={handleFileUpload} className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-600 file:text-white hover:file:bg-blue-700"/>
+                                            <input type="file" accept=".htm,.html,.csv" multiple onChange={handleFileUpload} className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-blue-600 file:text-white hover:file:bg-blue-700 cursor-pointer"/>
                                             {dataDate && <p className="text-[10px] text-gray-500 mt-2">最後匯入日期: {dataDate}</p>}
                                         </div>
 
@@ -936,17 +957,25 @@
                                                 <Icon name="upload" size={18}/> 上傳還原檔
                                                 <input type="file" accept=".json" onChange={importData} className="hidden"/>
                                             </label>
-                                            <button onClick={()=>{if(confirm("確定清空所有資料？")){localStorage.clear();window.location.reload();}}} className="w-full py-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-bold flex justify-center gap-2 mt-4"><Icon name="trash" size={18}/> 清空系統</button>
+                                            <button onClick={()=>{if(confirm("確定清空所有資料？無法復原！")){window.localStorage.clear();window.location.reload();}}} className="w-full py-2.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 font-bold flex justify-center gap-2 mt-4"><Icon name="trash" size={18}/> 清空系統</button>
                                         </div>
                                     </div>
                                 )}
 
                                 {sidePanel === 'resources' && (
                                     <div className="space-y-3">
-                                        <a href="https://tw.stock.yahoo.com" target="_blank" rel="noopener noreferrer" className="block p-4 bg-gray-50 rounded font-bold border hover:text-blue-600">Yahoo! 股市</a>
-                                        <a href="https://goodinfo.tw/tw/index.asp" target="_blank" rel="noopener noreferrer" className="block p-4 bg-gray-50 rounded font-bold border hover:text-blue-600">Goodinfo! 台灣股市</a>
-                                        <a href="https://mops.twse.com.tw" target="_blank" rel="noopener noreferrer" className="block p-4 bg-gray-50 rounded font-bold border hover:text-blue-600">公開資訊觀測站</a>
-                                        <a href="https://www.wantgoo.com" target="_blank" rel="noopener noreferrer" className="block p-4 bg-gray-50 rounded font-bold border hover:text-blue-600">玩股網</a>
+                                        {[
+                                            { name: 'Yahoo! 股市', url: 'https://tw.stock.yahoo.com' },
+                                            { name: 'Goodinfo! 台灣股市', url: 'https://goodinfo.tw/tw/index.asp' },
+                                            { name: '玩股網 Wantgoo', url: 'https://www.wantgoo.com' },
+                                            { name: '公開資訊觀測站', url: 'https://mops.twse.com.tw' },
+                                            { name: 'CMoney', url: 'https://www.cmoney.tw/app/' },
+                                            { name: '元大證券', url: 'https://www.yuanta.com.tw/' }
+                                        ].map((site, i) => (
+                                            <a key={i} href={site.url} target="_blank" rel="noopener noreferrer" className="block p-4 bg-gray-50 rounded-xl hover:bg-blue-50 hover:text-blue-700 font-bold transition flex justify-between items-center group border border-gray-100">
+                                                {site.name} <Icon name="external" size={16} className="text-gray-300 group-hover:text-blue-500"/>
+                                            </a>
+                                        ))}
                                     </div>
                                 )}
                             </div>
