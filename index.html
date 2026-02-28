@@ -254,7 +254,7 @@
             };
 
             // ==========================================
-            // 強制無快取 API 股價抓取 (雙引擎批次處理防漏抓)
+            // 強制無快取 API 股價抓取 (全面改用 Google 股市)
             // ==========================================
             const fetchRealTimePrices = async (isManual = false) => {
                 if (safeInventory.length === 0) {
@@ -275,90 +275,68 @@
                     const priceMap = {};
                     let updatedCount = 0;
 
-                    // 策略一：使用 Yahoo Finance 批次查詢 (避免併發請求過多被阻擋)
-                    const chunkSize = 20;
-                    for (let i = 0; i < uniqueStocks.length; i += chunkSize) {
-                        const chunk = uniqueStocks.slice(i, i + chunkSize);
-                        const symbols = chunk.map((s) => {
-                            const suffix = (s.market === '上櫃' || s.market === '興櫃') ? '.TWO' : '.TW';
-                            return `${s.code}${suffix}`;
-                        }).join(',');
-
-                        const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&_rnd=${Date.now()}`;
-                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
-                        
+                    // 透過 Google Finance 逐筆抓取網頁原始碼解析
+                    const pricePromises = uniqueStocks.map(async (stock) => {
                         try {
+                            const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
+                            const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW`;
+                            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
+                            
                             const res = await fetch(proxyUrl);
-                            if (res.ok) {
-                                const data = await res.json();
-                                const quotes = data.quoteResponse?.result || [];
-                                quotes.forEach(q => {
-                                    const baseCode = q.symbol.split('.')[0];
-                                    if (q.regularMarketPrice) {
-                                        priceMap[baseCode] = q.regularMarketPrice;
-                                        updatedCount++;
-                                    }
-                                });
+                            if (!res.ok) return { code: stock.code, price: null };
+                            const data = await res.json();
+                            if (!data.contents) return { code: stock.code, price: null };
+                            const html = data.contents;
+                            
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(html, 'text/html');
+                            
+                            let price = null;
+                            const priceNode = doc.querySelector('div[data-last-price]');
+                            if (priceNode) price = parseFloat(priceNode.getAttribute('data-last-price'));
+                            
+                            if (!price || isNaN(price)) {
+                                const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
+                                if (fallbackNode) price = parseFloat(fallbackNode.textContent.replace(/[^0-9.]/g, ''));
                             }
+                            
+                            if (price && !isNaN(price)) {
+                                return { code: stock.code, price: price };
+                            }
+                            return { code: stock.code, price: null };
                         } catch (e) {
-                            console.error("Yahoo bulk fetch failed", e);
+                            console.warn(`Google Finance fetch failed for ${stock.code}`, e);
+                            return { code: stock.code, price: null };
                         }
-                    }
+                    });
 
-                    // 策略二：針對漏抓的股票使用 Google Finance 備援逐筆抓取
-                    const missingStocks = uniqueStocks.filter(s => !priceMap[s.code]);
-                    if (missingStocks.length > 0) {
-                        // 為避免再次被擋，改用循序抓取(非併發)
-                        for (const stock of missingStocks) {
-                            try {
-                                const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
-                                const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW&_rnd=${Math.random()}`;
-                                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
-                                
-                                const res = await fetch(proxyUrl);
-                                if (!res.ok) continue;
-                                const html = await res.text();
-                                
-                                const parser = new DOMParser();
-                                const doc = parser.parseFromString(html, 'text/html');
-                                
-                                let price = null;
-                                const priceNode = doc.querySelector('div[data-last-price]');
-                                if (priceNode) price = parseFloat(priceNode.getAttribute('data-last-price'));
-                                
-                                if (!price || isNaN(price)) {
-                                    const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
-                                    if (fallbackNode) price = parseFloat(fallbackNode.textContent.replace(/[^0-9.]/g, ''));
-                                }
-                                
-                                if (price && !isNaN(price)) {
-                                    priceMap[stock.code] = price;
-                                    updatedCount++;
-                                }
-                            } catch (e) {
-                                console.error(`Google Finance fallback failed for ${stock.code}`, e);
-                            }
+                    const results = await Promise.all(pricePromises);
+                    
+                    results.forEach((r) => {
+                        if (r.price) {
+                            priceMap[r.code] = r.price;
+                            updatedCount++;
                         }
-                    }
+                    });
 
-                    if (updatedCount === 0) throw new Error("API 傳回空資料");
+                    if (updatedCount === 0) throw new Error("所有的 API 通道皆被伺服器拒絕或無回應");
 
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
                     
                     setInventory((prev) => prev.map((s) => {
                         if (priceMap[s.code]) {
-                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (即時)' };
+                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (Google 股市)' };
                         }
                         return s;
                     }));
 
                     setFetchStatus('success');
-                    if (isManual) alert(`成功更新了 ${updatedCount} 檔股票的即時市價！`);
+                    if (isManual) alert(`成功！已從 Google 股市即時更新 ${updatedCount} 檔股票的市價。`);
                 } catch (error) {
                     console.error("更新失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert('連線伺服器失敗，請稍後再試。');
+                    if (isManual) alert(`連線伺服器失敗 (${error.message})。\n\n可能原因：免費的代理伺服器目前負載過高。\n您可以稍後再試，或使用「編輯」功能手動更新市價。`);
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
