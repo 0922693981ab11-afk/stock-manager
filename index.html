@@ -254,7 +254,7 @@
             };
 
             // ==========================================
-            // 強制無快取 API 股價抓取 (Google Finance + Yahoo 雙保險)
+            // 強制無快取 API 股價抓取 (雙引擎批次處理防漏抓)
             // ==========================================
             const fetchRealTimePrices = async (isManual = false) => {
                 if (safeInventory.length === 0) {
@@ -272,66 +272,74 @@
                         }
                     });
 
-                    // 併發抓取所有股票
-                    const pricePromises = uniqueStocks.map(async (stock) => {
-                        try {
-                            const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
-                            // 加上隨機數徹底無視任何快取
-                            const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW&_rnd=${Math.random()}`;
-                            // 強制代理伺服器不要使用快取 (disableCache=true) & raw 返回最原始 HTML
-                            const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
-                            
-                            const res = await fetch(proxyUrl);
-                            if (!res.ok) throw new Error('Google HTML fetch error');
-                            const html = await res.text();
-                            
-                            const parser = new DOMParser();
-                            const doc = parser.parseFromString(html, 'text/html');
-                            
-                            let price = null;
-                            // 策略1: 尋找隱藏的精準屬性
-                            const priceNode = doc.querySelector('div[data-last-price]');
-                            if (priceNode) {
-                                price = parseFloat(priceNode.getAttribute('data-last-price'));
-                            } 
-                            // 策略2: 尋找顯示的價格欄位
-                            if (!price || isNaN(price)) {
-                                const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
-                                if (fallbackNode) {
-                                    price = parseFloat(fallbackNode.textContent.replace(/[^0-9.]/g, ''));
-                                }
-                            }
-                            
-                            if (price && !isNaN(price)) {
-                                return { code: stock.code, price: price };
-                            }
-
-                            // 策略3: 備用 Yahoo API (萬一 Google 改版)
-                            const yTarget = `https://query1.finance.yahoo.com/v8/finance/chart/${stock.code}.${exchange === 'TWO' ? 'TWO' : 'TW'}?interval=1m&range=1d&_rnd=${Math.random()}`;
-                            const yProxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(yTarget)}&disableCache=true`;
-                            const yRes = await fetch(yProxy);
-                            const yData = await yRes.json();
-                            const yPrice = yData?.chart?.result?.[0]?.meta?.regularMarketPrice;
-                            if (yPrice && !isNaN(yPrice)) {
-                                return { code: stock.code, price: yPrice };
-                            }
-
-                            return { code: stock.code, price: null };
-                        } catch (e) {
-                            return { code: stock.code, price: null };
-                        }
-                    });
-
-                    const results = await Promise.all(pricePromises);
-                    
                     const priceMap = {};
                     let updatedCount = 0;
-                    results.forEach((r) => {
-                        if (r.price) {
-                            priceMap[r.code] = r.price;
-                            updatedCount++;
+
+                    // 策略一：使用 Yahoo Finance 批次查詢 (避免併發請求過多被阻擋)
+                    const chunkSize = 20;
+                    for (let i = 0; i < uniqueStocks.length; i += chunkSize) {
+                        const chunk = uniqueStocks.slice(i, i + chunkSize);
+                        const symbols = chunk.map((s) => {
+                            const suffix = (s.market === '上櫃' || s.market === '興櫃') ? '.TWO' : '.TW';
+                            return `${s.code}${suffix}`;
+                        }).join(',');
+
+                        const targetUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbols}&_rnd=${Date.now()}`;
+                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
+                        
+                        try {
+                            const res = await fetch(proxyUrl);
+                            if (res.ok) {
+                                const data = await res.json();
+                                const quotes = data.quoteResponse?.result || [];
+                                quotes.forEach(q => {
+                                    const baseCode = q.symbol.split('.')[0];
+                                    if (q.regularMarketPrice) {
+                                        priceMap[baseCode] = q.regularMarketPrice;
+                                        updatedCount++;
+                                    }
+                                });
+                            }
+                        } catch (e) {
+                            console.error("Yahoo bulk fetch failed", e);
                         }
-                    });
+                    }
+
+                    // 策略二：針對漏抓的股票使用 Google Finance 備援逐筆抓取
+                    const missingStocks = uniqueStocks.filter(s => !priceMap[s.code]);
+                    if (missingStocks.length > 0) {
+                        // 為避免再次被擋，改用循序抓取(非併發)
+                        for (const stock of missingStocks) {
+                            try {
+                                const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
+                                const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW&_rnd=${Math.random()}`;
+                                const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
+                                
+                                const res = await fetch(proxyUrl);
+                                if (!res.ok) continue;
+                                const html = await res.text();
+                                
+                                const parser = new DOMParser();
+                                const doc = parser.parseFromString(html, 'text/html');
+                                
+                                let price = null;
+                                const priceNode = doc.querySelector('div[data-last-price]');
+                                if (priceNode) price = parseFloat(priceNode.getAttribute('data-last-price'));
+                                
+                                if (!price || isNaN(price)) {
+                                    const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
+                                    if (fallbackNode) price = parseFloat(fallbackNode.textContent.replace(/[^0-9.]/g, ''));
+                                }
+                                
+                                if (price && !isNaN(price)) {
+                                    priceMap[stock.code] = price;
+                                    updatedCount++;
+                                }
+                            } catch (e) {
+                                console.error(`Google Finance fallback failed for ${stock.code}`, e);
+                            }
+                        }
+                    }
 
                     if (updatedCount === 0) throw new Error("API 傳回空資料");
 
@@ -346,7 +354,7 @@
                     }));
 
                     setFetchStatus('success');
-                    if (isManual) alert('成功！市價已即時同步更新。');
+                    if (isManual) alert(`成功更新了 ${updatedCount} 檔股票的即時市價！`);
                 } catch (error) {
                     console.error("更新失敗:", error);
                     setFetchStatus('error');
@@ -356,6 +364,7 @@
                 }
             };
 
+            // 自動更新計時器 (每 10 秒)
             useEffect(() => {
                 let interval;
                 if (isAutoUpdate) {
