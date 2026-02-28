@@ -254,7 +254,7 @@
             };
 
             // ==========================================
-            // 強制無快取 API 股價抓取 (全面改用 Google 股市)
+            // 真實 API 股價抓取 (改用 台灣證券交易所 MIS API)
             // ==========================================
             const fetchRealTimePrices = async (isManual = false) => {
                 if (safeInventory.length === 0) {
@@ -263,6 +263,7 @@
                 }
                 setFetchStatus('fetching');
                 try {
+                    // 取出所有不重複的股票代號與市場
                     const uniqueStocks = [];
                     const seen = new Set();
                     safeInventory.forEach((s) => {
@@ -275,68 +276,64 @@
                     const priceMap = {};
                     let updatedCount = 0;
 
-                    // 透過 Google Finance 逐筆抓取網頁原始碼解析
-                    const pricePromises = uniqueStocks.map(async (stock) => {
+                    // 透過台灣證交所 MIS API 批次抓取 (避免單次請求過長，每 20 檔為一批)
+                    const chunkSize = 20;
+                    for (let i = 0; i < uniqueStocks.length; i += chunkSize) {
+                        const chunk = uniqueStocks.slice(i, i + chunkSize);
+                        const exChStr = chunk.map((s) => {
+                            // 台灣證交所 API 規則：上市為 tse，上櫃/興櫃為 otc
+                            const prefix = (s.market === '上櫃' || s.market === '興櫃') ? 'otc' : 'tse';
+                            return `${prefix}_${s.code}.tw`;
+                        }).join('|');
+                        
+                        // 呼叫 TWSE 官方 OpenAPI (MIS) 搭配 CORS Proxy 防阻擋
+                        const targetUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exChStr}&json=1&delay=0&_rnd=${Date.now()}`;
+                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
+                        
                         try {
-                            const exchange = (stock.market === '上櫃' || stock.market === '興櫃') ? 'TWO' : 'TPE';
-                            const targetUrl = `https://www.google.com/finance/quote/${stock.code}:${exchange}?hl=zh-TW`;
-                            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
-                            
                             const res = await fetch(proxyUrl);
-                            if (!res.ok) return { code: stock.code, price: null };
+                            if (!res.ok) continue;
                             const data = await res.json();
-                            if (!data.contents) return { code: stock.code, price: null };
-                            const html = data.contents;
                             
-                            const parser = new DOMParser();
-                            const doc = parser.parseFromString(html, 'text/html');
-                            
-                            let price = null;
-                            const priceNode = doc.querySelector('div[data-last-price]');
-                            if (priceNode) price = parseFloat(priceNode.getAttribute('data-last-price'));
-                            
-                            if (!price || isNaN(price)) {
-                                const fallbackNode = doc.querySelector('.YMlKec.fxKbKc');
-                                if (fallbackNode) price = parseFloat(fallbackNode.textContent.replace(/[^0-9.]/g, ''));
+                            if (data.msgArray && data.msgArray.length > 0) {
+                                data.msgArray.forEach((q) => {
+                                    const baseCode = q.c; // 股票代號
+                                    let price = parseFloat(q.z); // z為最近當盤成交價
+                                    
+                                    // 若當天尚未有成交紀錄(z為"-")，則取昨收價(y)
+                                    if (isNaN(price)) {
+                                        price = parseFloat(q.y); 
+                                    }
+                                    
+                                    if (!isNaN(price)) {
+                                        priceMap[baseCode] = price;
+                                        updatedCount++;
+                                    }
+                                });
                             }
-                            
-                            if (price && !isNaN(price)) {
-                                return { code: stock.code, price: price };
-                            }
-                            return { code: stock.code, price: null };
                         } catch (e) {
-                            console.warn(`Google Finance fetch failed for ${stock.code}`, e);
-                            return { code: stock.code, price: null };
+                            console.warn(`TWSE fetch failed for chunk`, e);
                         }
-                    });
+                    }
 
-                    const results = await Promise.all(pricePromises);
-                    
-                    results.forEach((r) => {
-                        if (r.price) {
-                            priceMap[r.code] = r.price;
-                            updatedCount++;
-                        }
-                    });
-
-                    if (updatedCount === 0) throw new Error("所有的 API 通道皆被伺服器拒絕或無回應");
+                    if (updatedCount === 0) throw new Error("無法從台灣證交所獲取有效報價");
 
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
                     
                     setInventory((prev) => prev.map((s) => {
                         if (priceMap[s.code]) {
-                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (Google 股市)' };
+                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (證交所即時)' };
                         }
                         return s;
                     }));
 
                     setFetchStatus('success');
-                    if (isManual) alert(`成功！已從 Google 股市即時更新 ${updatedCount} 檔股票的市價。`);
+                    if (isManual) alert(`成功！已從台灣證交所即時更新 ${updatedCount} 檔股票的市價。`);
                 } catch (error) {
                     console.error("更新失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert(`連線伺服器失敗 (${error.message})。\n\n可能原因：免費的代理伺服器目前負載過高。\n您可以稍後再試，或使用「編輯」功能手動更新市價。`);
+                    if (isManual) alert(`連線台灣證交所失敗 (${error.message})。\n\n可能原因：非交易時段維護或免費代理伺服器負載過高。\n您可以稍後再試，或使用「編輯」功能手動更新市價。`);
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
@@ -552,12 +549,11 @@
             };
 
             const getStockLink = (code, market) => {
-                const exchange = (market === '上櫃' || market === '興櫃') ? 'TWO' : 'TPE';
-                return `https://www.google.com/finance/quote/${code}:${exchange}`;
+                return `https://tw.stock.yahoo.com/quote/${code}`;
             };
 
             const resources = [
-                { name: 'Google 股市 (Google Finance)', url: 'https://www.google.com/finance' },
+                { name: '台灣證券交易所', url: 'https://www.twse.com.tw/' },
                 { name: 'Yahoo! 股市', url: 'https://tw.stock.yahoo.com' },
                 { name: 'Goodinfo! 台灣股市', url: 'https://goodinfo.tw/tw/index.asp' },
                 { name: '玩股網 Wantgoo', url: 'https://www.wantgoo.com' },
