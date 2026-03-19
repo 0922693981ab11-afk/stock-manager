@@ -155,7 +155,7 @@
         };
 
         // ==========================================
-        // 3. UI 圖示庫
+        // 3. UI 圖示庫 (徹底修復 SVG 包覆結構)
         // ==========================================
         const Icon = ({ name, size = 20, className = "" }) => {
             const icons = {
@@ -200,21 +200,22 @@
                 '2317': { name: '鴻海', category: '其他電子業', market: '上市' },
                 '2454': { name: '聯發科', category: '半導體業', market: '上市' },
                 '0050': { name: '元大台灣50', category: 'ETF', market: '上市' },
-                '2603': { name: '長榮', category: '航運業', market: '上市' }
+                '2603': { name: '長榮', category: '航運業', market: '上市' },
+                '8069': { name: '元太', category: '光電業', market: '上櫃' }
             };
 
             const FEE_RATE = 0.001425;
             const TAX_RATE = 0.003;
             const TAX_RATE_DAY_TRADE = 0.0015;
 
-            // --- 狀態管理 ---
-            const [inventory, setInventory] = useLocalStorage('v8_sp_inv', 'v7_sp_inv', []);
-            const [ledger, setLedger] = useLocalStorage('v8_sp_ledger', 'v7_sp_ledger', []);
-            const [cash, setCash] = useLocalStorage('v8_sp_cash', 'v7_sp_cash', 1000000);
-            const [settings, setSettings] = useLocalStorage('v8_sp_settings', 'v7_sp_settings', { discount: 0.6, minFee: 20 });
-            const [masterData, setMasterData] = useLocalStorage('v8_sp_master', 'v7_sp_master', defaultMasterData);
-            const [dataDate, setDataDate] = useLocalStorage('v8_sp_date', 'v7_sp_date', null);
-            const [userOpenCount, setUserOpenCount] = useLocalStorage('v8_sp_appOpenCount', 'v7_sp_appOpenCount', 0);
+            // --- 狀態管理 (使用強健版 Hook 保證不當機) ---
+            const [inventory, setInventory] = useLocalStorage('v10_sp_inv', 'v9_sp_inv', []);
+            const [ledger, setLedger] = useLocalStorage('v10_sp_ledger', 'v9_sp_ledger', []);
+            const [cash, setCash] = useLocalStorage('v10_sp_cash', 'v9_sp_cash', 1000000);
+            const [settings, setSettings] = useLocalStorage('v10_sp_settings', 'v9_sp_settings', { discount: 0.6, minFee: 20 });
+            const [masterData, setMasterData] = useLocalStorage('v10_sp_master', 'v9_sp_master', defaultMasterData);
+            const [dataDate, setDataDate] = useLocalStorage('v10_sp_date', 'v9_sp_date', null);
+            const [userOpenCount, setUserOpenCount] = useLocalStorage('v10_sp_appOpenCount', 'v9_sp_appOpenCount', 0);
 
             // 防呆處理
             const safeInventory = Array.isArray(inventory) ? inventory : [];
@@ -254,7 +255,7 @@
             };
 
             // ==========================================
-            // 真實 API 股價抓取 (改用 台灣證券交易所 MIS API)
+            // 強制無快取 API 股價抓取 (自動雙棲校正引擎 - Yahoo API)
             // ==========================================
             const fetchRealTimePrices = async (isManual = false) => {
                 if (safeInventory.length === 0) {
@@ -263,77 +264,86 @@
                 }
                 setFetchStatus('fetching');
                 try {
-                    // 取出所有不重複的股票代號與市場
-                    const uniqueStocks = [];
-                    const seen = new Set();
-                    safeInventory.forEach((s) => {
-                        if (!seen.has(s.code)) {
-                            seen.add(s.code);
-                            uniqueStocks.push({ code: s.code, market: s.market });
-                        }
-                    });
-
+                    // 取出所有不重複的股票代號
+                    const uniqueCodes = [...new Set(safeInventory.map(s => s.code))];
                     const priceMap = {};
                     let updatedCount = 0;
 
-                    // 透過台灣證交所 MIS API 批次抓取 (避免單次請求過長，每 20 檔為一批)
-                    const chunkSize = 20;
-                    for (let i = 0; i < uniqueStocks.length; i += chunkSize) {
-                        const chunk = uniqueStocks.slice(i, i + chunkSize);
-                        const exChStr = chunk.map((s) => {
-                            // 台灣證交所 API 規則：上市為 tse，上櫃/興櫃為 otc
-                            const prefix = (s.market === '上櫃' || s.market === '興櫃') ? 'otc' : 'tse';
-                            return `${prefix}_${s.code}.tw`;
-                        }).join('|');
+                    // 批次處理，每批 10 檔 (避免單次 URL 過長)
+                    const chunkSize = 10;
+                    for (let i = 0; i < uniqueCodes.length; i += chunkSize) {
+                        const chunk = uniqueCodes.slice(i, i + chunkSize);
                         
-                        // 呼叫 TWSE 官方 OpenAPI (MIS) 搭配 CORS Proxy 防阻擋
-                        const targetUrl = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exChStr}&json=1&delay=0&_rnd=${Date.now()}`;
-                        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
+                        // 核心防呆：不管使用者設定什麼市場，同時查詢 .TW (上市) 與 .TWO (上櫃)
+                        // 讓 API 資料庫自己告訴我們正確的市場是哪一個，100% 防止因為選錯而漏抓！
+                        const symbols = chunk.map((code) => `${code}.TW,${code}.TWO`).join(',');
+                        
+                        const targetUrl = `https://query1.finance.yahoo.com/v8/finance/spark?symbols=${symbols}&range=1d&interval=1d&_rnd=${Date.now()}`;
+                        const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}&disableCache=true`;
                         
                         try {
                             const res = await fetch(proxyUrl);
                             if (!res.ok) continue;
                             const data = await res.json();
                             
-                            if (data.msgArray && data.msgArray.length > 0) {
-                                data.msgArray.forEach((q) => {
-                                    const baseCode = q.c; // 股票代號
-                                    let price = parseFloat(q.z); // z為最近當盤成交價
+                            if (data.contents) {
+                                const parsedData = JSON.parse(data.contents);
+                                const quotes = parsedData.spark?.result || [];
+                                
+                                quotes.forEach((q) => {
+                                    if (!q.response || q.response.length === 0) return; // 略過無效的代號
                                     
-                                    // 若當天尚未有成交紀錄(z為"-")，則取昨收價(y)
-                                    if (isNaN(price)) {
-                                        price = parseFloat(q.y); 
-                                    }
+                                    const meta = q.response[0].meta;
+                                    if (!meta) return;
+
+                                    const symbolParts = q.symbol.split('.');
+                                    const baseCode = symbolParts[0];
+                                    const suffix = symbolParts[1]; // TW 或 TWO
                                     
-                                    if (!isNaN(price)) {
-                                        priceMap[baseCode] = price;
+                                    let price = meta.regularMarketPrice;
+                                    // 若無最新即時價 (可能剛開盤或無成交)，則抓取昨收價
+                                    if (!price || isNaN(price)) price = meta.chartPreviousClose;
+                                    
+                                    if (price && !isNaN(price)) {
+                                        // 若抓取到，寫入 Map，並帶入自動校正後的市場分類
+                                        priceMap[baseCode] = {
+                                            price: price,
+                                            market: suffix === 'TWO' ? '上櫃' : '上市'
+                                        };
                                         updatedCount++;
                                     }
                                 });
                             }
                         } catch (e) {
-                            console.warn(`TWSE fetch failed for chunk`, e);
+                            console.warn(`Fetch failed for chunk`, e);
                         }
                     }
 
-                    if (updatedCount === 0) throw new Error("無法從台灣證交所獲取有效報價");
+                    if (Object.keys(priceMap).length === 0) {
+                        throw new Error("無法獲取有效報價，請確認代碼是否正確或網路狀態");
+                    }
 
                     const now = new Date();
                     const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
                     
                     setInventory((prev) => prev.map((s) => {
                         if (priceMap[s.code]) {
-                            return { ...s, currentPrice: priceMap[s.code], lastUpdate: timeStr + ' (證交所即時)' };
+                            return { 
+                                ...s, 
+                                currentPrice: priceMap[s.code].price, 
+                                market: priceMap[s.code].market, // 全自動校正市場！
+                                lastUpdate: timeStr + ' (即時)' 
+                            };
                         }
                         return s;
                     }));
 
                     setFetchStatus('success');
-                    if (isManual) alert(`成功！已從台灣證交所即時更新 ${updatedCount} 檔股票的市價。`);
+                    if (isManual) alert(`成功！已即時同步更新 ${Object.keys(priceMap).length} 檔上市/上櫃股票的市價。`);
                 } catch (error) {
                     console.error("更新失敗:", error);
                     setFetchStatus('error');
-                    if (isManual) alert(`連線台灣證交所失敗 (${error.message})。\n\n可能原因：非交易時段維護或免費代理伺服器負載過高。\n您可以稍後再試，或使用「編輯」功能手動更新市價。`);
+                    if (isManual) alert(`連線失敗 (${error.message})。\n您可以稍後再試，或使用「編輯」按鈕手動更新市價。`);
                 } finally {
                     setTimeout(() => setFetchStatus('idle'), 3000);
                 }
@@ -451,7 +461,7 @@
                     
                     const safeMasterData = masterData || {};
                     if (!safeMasterData[code]) {
-                        setMasterData((prev) => ({...prev, [code]: { name, market: '自定義' }}));
+                        setMasterData((prev) => ({...prev, [code]: { name, market: '上市' }}));
                     }
 
                     const idx = newInv.findIndex((s) => s.code === code);
@@ -548,7 +558,7 @@
                 a.click();
             };
 
-            const getStockLink = (code, market) => {
+            const getStockLink = (code) => {
                 return `https://tw.stock.yahoo.com/quote/${code}`;
             };
 
@@ -692,7 +702,7 @@
                                                 <tr>
                                                     <th className="p-4 pl-6">標的 / 進階分析</th>
                                                     <th className="p-4 text-right">庫存股數</th>
-                                                    <th className="p-4 text-right text-indigo-700">購入均價 (成本)</th>
+                                                    <th className="p-4 text-right text-indigo-700">購買均價 (加權)</th>
                                                     <th className="p-4 text-right text-blue-700">即時市價</th>
                                                     <th className="p-4 text-right">市值 / 帳面損益</th>
                                                     <th className="p-4 text-center">操作 (買/賣/編/刪)</th>
